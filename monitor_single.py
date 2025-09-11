@@ -1,8 +1,15 @@
 import requests
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from bs4 import BeautifulSoup
+
+# 한국 시간대 설정
+KST = timezone(timedelta(hours=9))
+
+def get_kst_time():
+    """현재 한국 시간을 반환합니다"""
+    return datetime.now(KST)
 
 class NewsMonitor:
     def __init__(self, telegram_bot_token, telegram_chat_id):
@@ -85,8 +92,9 @@ class NewsMonitor:
     def check_news(self):
         """뉴스를 확인하고 새로운 제목이 있으면 알림을 보냅니다"""
         url = "https://www.yna.co.kr/sports/all"
+        current_time = get_kst_time()
         print(f"\n{'='*60}")
-        print(f"🔍 뉴스 모니터링 시작: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        print(f"🔍 뉴스 모니터링 시작: {current_time.strftime('%Y-%m-%d %H:%M:%S KST')}")
         print(f"{'='*60}")
         
         current_titles = self.get_news_titles(url)
@@ -110,17 +118,17 @@ class NewsMonitor:
             # 새 제목들을 리스트로 변환하고 정렬
             new_titles_list = sorted(list(new_titles))
             
-            # 텔레그램 메시지 생성
+            # 텔레그램 메시지 생성 (깔끔한 목록 형태)
             message = f"""🆕 <b>새로운 스포츠 뉴스!</b>
 
 📍 연합뉴스 스포츠
-⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+⏰ {current_time.strftime('%Y-%m-%d %H:%M:%S KST')}
 
 📰 새로 올라온 제목:
 """
             
-            for i, title in enumerate(new_titles_list, 1):
-                message += f"{i}. {title}\n"
+            for title in new_titles_list:
+                message += f"-{title}\n"
             
             message += f"\n🔗 {url}"
             
@@ -129,14 +137,14 @@ class NewsMonitor:
                 base_msg = f"""🆕 <b>새로운 스포츠 뉴스!</b>
 
 📍 연합뉴스 스포츠
-⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+⏰ {current_time.strftime('%Y-%m-%d %H:%M:%S KST')}
 
 📰 새로 올라온 제목 ({len(new_titles_list)}개):
 """
                 
                 current_msg = base_msg
-                for i, title in enumerate(new_titles_list, 1):
-                    line = f"{i}. {title}\n"
+                for title in new_titles_list:
+                    line = f"-{title}\n"
                     if len(current_msg + line) > 3500:
                         self.send_telegram_message(current_msg)
                         current_msg = f"📰 계속...\n{line}"
@@ -151,9 +159,9 @@ class NewsMonitor:
             
             # 로그 파일 저장
             try:
-                log_filename = f"new_titles_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+                log_filename = f"new_titles_{current_time.strftime('%Y%m%d_%H%M%S')}.txt"
                 with open(log_filename, 'w', encoding='utf-8') as f:
-                    f.write(f"새로운 제목 발견: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
+                    f.write(f"새로운 제목 발견: {current_time.strftime('%Y-%m-%d %H:%M:%S KST')}\n\n")
                     for title in new_titles_list:
                         f.write(f"- {title}\n")
                 print(f"📄 로그 파일 저장: {log_filename}")
@@ -166,7 +174,7 @@ class NewsMonitor:
         # 현재 데이터 저장
         self.previous_data = {
             'titles': current_titles,
-            'last_checked': datetime.now().isoformat(),
+            'last_checked': current_time.isoformat(),
             'total_count': len(current_titles)
         }
         self.save_data()
