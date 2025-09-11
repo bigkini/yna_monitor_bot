@@ -34,7 +34,7 @@ class NewsMonitor:
             print(f"데이터 저장 실패: {e}")
     
     def get_news_titles(self, url):
-        """연합뉴스에서 span.title01 요소의 텍스트를 가져옵니다"""
+        """연합뉴스에서 div.section01 아래 span.title01 요소의 텍스트를 가져옵니다"""
         try:
             headers = {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
@@ -44,10 +44,12 @@ class NewsMonitor:
             response.raise_for_status()
             
             soup = BeautifulSoup(response.text, 'html.parser')
-            title_elements = soup.select('span.title01')
+            
+            # div.section01 안에 있는 span.title01만 선택
+            title_elements = soup.select('div.section01 span.title01')
             
             if not title_elements:
-                print("⚠️ span.title01 요소를 찾을 수 없습니다")
+                print("⚠️ div.section01 span.title01 요소를 찾을 수 없습니다")
                 return []
             
             titles = []
@@ -56,7 +58,7 @@ class NewsMonitor:
                 if text:
                     titles.append(text)
             
-            print(f"📰 총 {len(titles)}개의 제목을 찾았습니다")
+            print(f"📰 div.section01에서 {len(title_elements)}개의 제목을 찾았습니다")
             return titles
         
         except Exception as e:
