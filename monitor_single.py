@@ -89,6 +89,41 @@ class NewsMonitor:
             print(f"❌ 텔레그램 메시지 전송 실패: {e}")
             return False
     
+    def get_previous_sent_titles(self):
+        """텔레그램에서 이전에 보낸 메시지들을 가져와서 제목 목록 추출"""
+        try:
+            url = f"https://api.telegram.org/bot{self.bot_token}/getUpdates"
+            response = requests.get(url, timeout=10)
+            response.raise_for_status()
+            
+            data = response.json()
+            sent_titles = set()
+            
+            if data.get('ok') and data.get('result'):
+                for update in data['result']:
+                    message = update.get('message', {})
+                    text = message.get('text', '')
+                    
+                    # 봇이 보낸 메시지이고 새로운 뉴스 메시지인 경우
+                    if (message.get('from', {}).get('is_bot') and 
+                        '새로운 스포츠 뉴스' in text and 
+                        '새로 올라온 제목:' in text):
+                        
+                        # 메시지에서 제목들 추출
+                        lines = text.split('\n')
+                        for line in lines:
+                            if line.startswith('-'):
+                                title = line[1:].strip()  # '-' 제거
+                                if title:
+                                    sent_titles.add(title)
+            
+            print(f"📋 이전 전송 기록에서 {len(sent_titles)}개 제목 확인")
+            return sent_titles
+            
+        except Exception as e:
+            print(f"이전 메시지 조회 실패: {e}")
+            return set()
+    
     def check_news(self):
         """뉴스를 확인하고 새로운 제목이 있으면 알림을 보냅니다"""
         url = "https://www.yna.co.kr/sports/all"
@@ -105,12 +140,11 @@ class NewsMonitor:
         # 현재 제목들을 세트로 변환
         current_set = set(current_titles)
         
-        # 이전 제목들 가져오기
-        previous_titles = self.previous_data.get('titles', [])
-        previous_set = set(previous_titles)
+        # 텔레그램에서 이전에 보낸 제목들 가져오기
+        previous_sent_titles = self.get_previous_sent_titles()
         
-        # 새로운 제목들 찾기
-        new_titles = current_set - previous_set
+        # 아직 보내지 않은 새로운 제목들만 찾기
+        new_titles = current_set - previous_sent_titles
         
         if new_titles:
             print(f"🆕 새로운 제목 {len(new_titles)}개 발견!")
@@ -169,17 +203,9 @@ class NewsMonitor:
                 print(f"로그 파일 저장 실패: {e}")
         
         else:
-            print("📰 새로운 제목이 없습니다")
+            print("📰 새로운 제목이 없습니다 (이미 전송된 제목들)")
         
-        # 현재 데이터 저장
-        self.previous_data = {
-            'titles': current_titles,
-            'last_checked': current_time.isoformat(),
-            'total_count': len(current_titles)
-        }
-        self.save_data()
-        
-        print(f"✅ 모니터링 완료 (총 {len(current_titles)}개 제목)")
+        print(f"✅ 모니터링 완료 (총 {len(current_titles)}개 제목, 새로운 제목 {len(new_titles) if new_titles else 0}개)")
 
 def main():
     # 환경변수에서 설정 가져오기
