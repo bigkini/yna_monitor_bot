@@ -46,7 +46,7 @@ jobs:
         python monitor_single.py
 
     - name: 실행 결과 저장 (선택사항)
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       if: always()
       with:
         name: monitoring-logs
