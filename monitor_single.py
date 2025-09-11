@@ -183,7 +183,9 @@ def main():
         print("TELEGRAM_BOT_TOKEN과 TELEGRAM_CHAT_ID를 설정해주세요.")
         return
     
+    current_time = get_kst_time()
     print("🚀 연합뉴스 스포츠 모니터링 시작")
+    print(f"현재 시간: {current_time.strftime('%Y-%m-%d %H:%M:%S KST')}")
     print(f"봇 토큰: {bot_token[:10]}...")
     print(f"채팅 ID: {chat_id}")
     
