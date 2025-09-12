@@ -12,36 +12,64 @@ def get_kst_time():
     return datetime.now(KST)
 
 class NewsMonitor:
-    def __init__(self, telegram_bot_token, telegram_chat_id):
+    def __init__(self, telegram_bot_token, telegram_chat_id, github_token, gist_id):
         self.bot_token = telegram_bot_token
         self.chat_id = telegram_chat_id
-        self.data_file = "news_data.json"
+        self.github_token = github_token
+        self.gist_id = gist_id
         self.load_previous_data()
     
     def load_previous_data(self):
-        """이전에 저장된 뉴스 데이터를 로드합니다"""
+        """GitHub Gist에서 이전 데이터를 로드합니다"""
         try:
-            if os.path.exists(self.data_file):
-                with open(self.data_file, 'r', encoding='utf-8') as f:
-                    self.previous_data = json.load(f)
+            url = f"https://api.github.com/gists/{self.gist_id}"
+            headers = {"Authorization": f"token {self.github_token}"}
+            response = requests.get(url, headers=headers)
+            
+            if response.status_code == 200:
+                gist_data = response.json()
+                content = gist_data['files']['news_data.json']['content']
+                data = json.loads(content)
+                self.previous_titles = set(data.get('titles', []))
+                print(f"Gist에서 이전 데이터 로드: {len(self.previous_titles)}개 제목")
             else:
-                self.previous_data = {}
-                print("이전 데이터 파일이 없습니다. 새로 시작합니다.")
+                self.previous_titles = set()
+                print("Gist 접근 실패. 새로 시작합니다.")
         except Exception as e:
-            print(f"데이터 로드 실패: {e}")
-            self.previous_data = {}
+            print(f"Gist 데이터 로드 실패: {e}")
+            self.previous_titles = set()
     
-    def save_data(self):
-        """현재 뉴스 데이터를 저장합니다"""
+    def save_data(self, current_titles):
+        """GitHub Gist에 현재 데이터를 저장합니다"""
         try:
-            with open(self.data_file, 'w', encoding='utf-8') as f:
-                json.dump(self.previous_data, f, ensure_ascii=False, indent=2)
-            print("데이터 저장 완료")
+            data = {
+                'titles': list(current_titles),
+                'last_updated': get_kst_time().isoformat()
+            }
+            
+            url = f"https://api.github.com/gists/{self.gist_id}"
+            headers = {
+                "Authorization": f"token {self.github_token}",
+                "Content-Type": "application/json"
+            }
+            payload = {
+                "files": {
+                    "news_data.json": {
+                        "content": json.dumps(data, ensure_ascii=False, indent=2)
+                    }
+                }
+            }
+            
+            response = requests.patch(url, headers=headers, json=payload)
+            if response.status_code == 200:
+                print("Gist 데이터 저장 완료")
+            else:
+                print(f"Gist 저장 실패: {response.status_code}")
         except Exception as e:
-            print(f"데이터 저장 실패: {e}")
+            print(f"Gist 데이터 저장 실패: {e}")
     
     def get_news_titles(self, url):
-        """연합뉴스에서 div.section01 아래 span.title01 요소의 텍스트를 가져옵니다"""
+        """연합뉴스에서 첫 번째 ul.list01의 li 요소들을 순서대로 가져옵니다"""
         try:
             headers = {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
@@ -52,20 +80,34 @@ class NewsMonitor:
             
             soup = BeautifulSoup(response.text, 'html.parser')
             
-            # div.section01 안에 있는 span.title01만 선택
-            title_elements = soup.select('div.section01 span.title01')
+            # 첫 번째 ul.list01을 찾기
+            first_ul = soup.select_one('ul.list01')
             
-            if not title_elements:
-                print("⚠️ div.section01 span.title01 요소를 찾을 수 없습니다")
+            if not first_ul:
+                print("⚠️ ul.list01 요소를 찾을 수 없습니다")
                 return []
             
-            titles = []
-            for element in title_elements:
-                text = element.get_text(strip=True)
-                if text:
-                    titles.append(text)
+            # 직접 자식 li 요소들만 가져오기 (순서 보장)
+            li_elements = first_ul.find_all('li', recursive=False)
             
-            print(f"📰 div.section01에서 {len(title_elements)}개의 제목을 찾았습니다")
+            titles = []
+            for li in li_elements:
+                # 광고나 기타 요소 제외
+                if 'ads-item01' in li.get('class', []):
+                    continue
+                    
+                title_span = li.select_one('span.title01')
+                if title_span:
+                    text = title_span.get_text(strip=True)
+                    if text:
+                        titles.append(text)
+            
+            print(f"📰 총 {len(titles)}개의 제목을 찾았습니다")
+            
+            # 처음 몇 개 제목 출력해서 확인
+            for i, title in enumerate(titles[:3]):
+                print(f"  {i+1}. {title[:50]}...")
+                
             return titles
         
         except Exception as e:
@@ -89,41 +131,6 @@ class NewsMonitor:
             print(f"❌ 텔레그램 메시지 전송 실패: {e}")
             return False
     
-    def get_previous_sent_titles(self):
-        """텔레그램에서 이전에 보낸 메시지들을 가져와서 제목 목록 추출"""
-        try:
-            url = f"https://api.telegram.org/bot{self.bot_token}/getUpdates"
-            response = requests.get(url, timeout=10)
-            response.raise_for_status()
-            
-            data = response.json()
-            sent_titles = set()
-            
-            if data.get('ok') and data.get('result'):
-                for update in data['result']:
-                    message = update.get('message', {})
-                    text = message.get('text', '')
-                    
-                    # 봇이 보낸 메시지이고 새로운 뉴스 메시지인 경우
-                    if (message.get('from', {}).get('is_bot') and 
-                        '새로운 스포츠 뉴스' in text and 
-                        '새로 올라온 제목:' in text):
-                        
-                        # 메시지에서 제목들 추출
-                        lines = text.split('\n')
-                        for line in lines:
-                            if line.startswith('-'):
-                                title = line[1:].strip()  # '-' 제거
-                                if title:
-                                    sent_titles.add(title)
-            
-            print(f"📋 이전 전송 기록에서 {len(sent_titles)}개 제목 확인")
-            return sent_titles
-            
-        except Exception as e:
-            print(f"이전 메시지 조회 실패: {e}")
-            return set()
-    
     def check_news(self):
         """뉴스를 확인하고 새로운 제목이 있으면 알림을 보냅니다"""
         url = "https://www.yna.co.kr/sports/all"
@@ -140,45 +147,50 @@ class NewsMonitor:
         # 현재 제목들을 세트로 변환
         current_set = set(current_titles)
         
-        # 텔레그램에서 이전에 보낸 제목들 가져오기
-        previous_sent_titles = self.get_previous_sent_titles()
+        print(f"📊 이전 저장된 제목: {len(self.previous_titles)}개")
+        print(f"📊 현재 가져온 제목: {len(current_set)}개")
         
-        # 아직 보내지 않은 새로운 제목들만 찾기
-        new_titles = current_set - previous_sent_titles
+        # 새로운 제목들 찾기
+        new_titles = current_set - self.previous_titles
+        
+        print(f"📊 새로운 제목: {len(new_titles)}개")
         
         if new_titles:
-            print(f"🆕 새로운 제목 {len(new_titles)}개 발견!")
+            print(f"🆕 새로운 제목들:")
+            for i, title in enumerate(new_titles, 1):
+                print(f"  {i}. {title}")
             
-            # 새 제목들을 리스트로 변환하고 정렬
-            new_titles_list = sorted(list(new_titles))
+            # 새 제목들을 원래 순서대로 정렬 (current_titles 순서 유지)
+            new_titles_ordered = [title for title in current_titles if title in new_titles]
             
-            # 텔레그램 메시지 생성 (깔끔한 목록 형태)
-            message = f"""🆕 <b>새로운 스포츠 뉴스!</b>
+            # 텔레그램 메시지 생성
+            message = f"""🆕 새로운 스포츠 뉴스!
 
 📍 연합뉴스 스포츠
 ⏰ {current_time.strftime('%Y-%m-%d %H:%M:%S KST')}
 
-📰 새로 올라온 제목:
+📰 새로 올라온 제목 ({len(new_titles_ordered)}개):
 """
             
-            for title in new_titles_list:
-                message += f"-{title}\n"
+            for title in new_titles_ordered:
+                message += f"- {title}\n"
             
             message += f"\n🔗 {url}"
             
-            # 메시지가 너무 길면 나누어 전송
+            # 메시지 전송
             if len(message) > 4000:
-                base_msg = f"""🆕 <b>새로운 스포츠 뉴스!</b>
+                # 메시지가 너무 길면 나누어 전송
+                base_msg = f"""🆕 새로운 스포츠 뉴스!
 
 📍 연합뉴스 스포츠
 ⏰ {current_time.strftime('%Y-%m-%d %H:%M:%S KST')}
 
-📰 새로 올라온 제목 ({len(new_titles_list)}개):
+📰 새로 올라온 제목 ({len(new_titles_ordered)}개):
 """
                 
                 current_msg = base_msg
-                for title in new_titles_list:
-                    line = f"-{title}\n"
+                for title in new_titles_ordered:
+                    line = f"- {title}\n"
                     if len(current_msg + line) > 3500:
                         self.send_telegram_message(current_msg)
                         current_msg = f"📰 계속...\n{line}"
@@ -191,30 +203,42 @@ class NewsMonitor:
             else:
                 self.send_telegram_message(message)
             
+            # 현재 제목들을 저장 (다음 비교를 위해)
+            self.save_data(current_set)
+            self.previous_titles = current_set
+            
             # 로그 파일 저장
             try:
                 log_filename = f"new_titles_{current_time.strftime('%Y%m%d_%H%M%S')}.txt"
                 with open(log_filename, 'w', encoding='utf-8') as f:
                     f.write(f"새로운 제목 발견: {current_time.strftime('%Y-%m-%d %H:%M:%S KST')}\n\n")
-                    for title in new_titles_list:
+                    for title in new_titles_ordered:
                         f.write(f"- {title}\n")
                 print(f"📄 로그 파일 저장: {log_filename}")
             except Exception as e:
                 print(f"로그 파일 저장 실패: {e}")
         
         else:
-            print("📰 새로운 제목이 없습니다 (이미 전송된 제목들)")
+            print("📰 새로운 제목이 없습니다")
+            # 제목이 새로운 게 없어도 현재 상태 저장
+            self.save_data(current_set)
+            self.previous_titles = current_set
         
-        print(f"✅ 모니터링 완료 (총 {len(current_titles)}개 제목, 새로운 제목 {len(new_titles) if new_titles else 0}개)")
+        print(f"✅ 모니터링 완료")
 
 def main():
     # 환경변수에서 설정 가져오기
     bot_token = os.getenv('TELEGRAM_BOT_TOKEN')
     chat_id = os.getenv('TELEGRAM_CHAT_ID')
+    github_token = os.getenv('GIST_ACCESS_TOKEN')
+    gist_id = os.getenv('GIST_ID')
     
-    if not bot_token or not chat_id:
+    if not all([bot_token, chat_id, github_token, gist_id]):
         print("❌ 환경변수가 설정되지 않았습니다!")
-        print("TELEGRAM_BOT_TOKEN과 TELEGRAM_CHAT_ID를 설정해주세요.")
+        print(f"bot_token: {'✓' if bot_token else '✗'}")
+        print(f"chat_id: {'✓' if chat_id else '✗'}")
+        print(f"github_token: {'✓' if github_token else '✗'}")
+        print(f"gist_id: {'✓' if gist_id else '✗'}")
         return
     
     current_time = get_kst_time()
@@ -222,10 +246,12 @@ def main():
     print(f"현재 시간: {current_time.strftime('%Y-%m-%d %H:%M:%S KST')}")
     print(f"봇 토큰: {bot_token[:10]}...")
     print(f"채팅 ID: {chat_id}")
+    print(f"Gist ID: {gist_id}")
     
     # 모니터 실행
-    monitor = NewsMonitor(bot_token, chat_id)
+    monitor = NewsMonitor(bot_token, chat_id, github_token, gist_id)
     monitor.check_news()
 
 if __name__ == "__main__":
     main()
+
