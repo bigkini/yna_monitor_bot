@@ -34,20 +34,29 @@ class NewsMonitor:
                 gist_data = response.json()
                 content = gist_data['files']['news_data.json']['content']
                 data = json.loads(content)
-                # 제목과 링크를 함께 저장하도록 수정
-                self.previous_articles = {item['title']: item['link'] for item in data.get('articles', [])}
-                print(f"이전 데이터 로드: {len(self.previous_articles)}개 기사")
+                
+                # 기존 구조와 새 구조 모두 지원
+                if 'articles' in data:
+                    # 새로운 구조: articles 배열
+                    self.previous_titles = {item['title'] for item in data['articles']}
+                elif 'titles' in data:
+                    # 기존 구조: titles 배열 (문자열만)
+                    self.previous_titles = set(data['titles'])
+                else:
+                    self.previous_titles = set()
+                
+                print(f"이전 데이터 로드: {len(self.previous_titles)}개 기사")
             else:
-                self.previous_articles = {}
+                self.previous_titles = set()
                 print("이전 데이터가 없습니다. 새로 시작합니다.")
         except Exception as e:
             print(f"데이터 로드 실패: {e}")
-            self.previous_articles = {}
+            self.previous_titles = set()
     
     def save_data(self, current_articles):
         """GitHub Gist에 현재 데이터를 저장합니다"""
         try:
-            # 제목과 링크를 함께 저장
+            # 딕셔너리를 리스트로 변환
             articles_list = [{'title': title, 'link': link} for title, link in current_articles.items()]
             data = {
                 'articles': articles_list,
@@ -161,29 +170,17 @@ class NewsMonitor:
             print("❌ 기사를 가져올 수 없습니다")
             return
         
-        # 데이터 타입 확인 및 처리
-        print(f"현재 기사 데이터 타입: {type(current_articles)}")
-        
-        # 딕셔너리로 반환된 경우 리스트로 변환
-        if isinstance(current_articles, dict):
-            print("딕셔너리 형태의 데이터를 리스트로 변환합니다")
-            articles_list = []
-            for title, link in current_articles.items():
-                articles_list.append({'title': title, 'link': link})
-            current_articles = articles_list
-        
-        if current_articles:
-            print(f"첫 번째 기사: {current_articles[0]}")
+        # 현재 기사 제목들 (set)
+        current_titles = set(current_articles.keys())
         
         # 새로운 기사들 찾기 (제목 기준으로 비교)
-        current_titles = {article['title'] for article in current_articles}
         new_titles = current_titles - self.previous_titles
         
         print(f"새로운 기사: {len(new_titles)}개")
         
         if new_titles:
             # 새로운 기사들을 페이지 순서대로 정렬 (위에 있는 기사가 먼저)
-            new_articles = [article for article in current_articles if article['title'] in new_titles]
+            new_articles = [(title, current_articles[title]) for title in current_articles.keys() if title in new_titles]
             
             # 텔레그램 메시지 생성
             message = f"""🆕 새로운 스포츠 뉴스!
@@ -194,9 +191,9 @@ class NewsMonitor:
 📰 새로 올라온 기사:
 """
             
-            for article in new_articles:
+            for title, link in new_articles:
                 # HTML 형식으로 링크 포함
-                message += f"• <a href='{article['link']}'>{article['title']}</a>\n"
+                message += f"• <a href='{link}'>{title}</a>\n"
             
             # 메시지가 너무 길면 나누어 전송
             if len(message) > 4000:
@@ -209,8 +206,8 @@ class NewsMonitor:
 """
                 
                 current_msg = base_msg
-                for article in new_articles:
-                    line = f"• <a href='{article['link']}'>{article['title']}</a>\n"
+                for title, link in new_articles:
+                    line = f"• <a href='{link}'>{title}</a>\n"
                     if len(current_msg + line) > 3500:
                         self.send_telegram_message(current_msg)
                         current_msg = f"📰 계속...\n{line}"
@@ -224,7 +221,6 @@ class NewsMonitor:
             
             # 현재 기사들을 저장 (다음 비교를 위해)
             self.save_data(current_articles)
-            self.previous_articles = current_articles
             self.previous_titles = current_titles
             
             # 로그 파일 저장
@@ -232,8 +228,8 @@ class NewsMonitor:
                 log_filename = f"new_articles_{current_time.strftime('%Y%m%d_%H%M%S')}.txt"
                 with open(log_filename, 'w', encoding='utf-8') as f:
                     f.write(f"새로운 기사 발견: {current_time.strftime('%Y-%m-%d %H:%M:%S KST')}\n\n")
-                    for article in new_articles:
-                        f.write(f"• {article['title']}\n  링크: {article['link']}\n\n")
+                    for title, link in new_articles:
+                        f.write(f"• {title}\n  링크: {link}\n\n")
                 print(f"📄 로그 파일 저장: {log_filename}")
             except Exception as e:
                 print(f"로그 파일 저장 실패: {e}")
@@ -242,7 +238,6 @@ class NewsMonitor:
             print("새로운 기사가 없습니다")
             # 기사가 새로운 게 없어도 현재 상태 저장
             self.save_data(current_articles)
-            self.previous_articles = current_articles
             self.previous_titles = current_titles
         
         print(f"✅ 모니터링 완료")
