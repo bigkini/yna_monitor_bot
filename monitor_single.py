@@ -162,11 +162,15 @@ class NewsMonitor:
             return
         
         # 새로운 기사들 찾기 (제목 기준으로 비교)
-        new_titles = set(current_articles.keys()) - set(self.previous_articles.keys())
+        current_titles = {article['title'] for article in current_articles}
+        new_titles = current_titles - self.previous_titles
         
         print(f"새로운 기사: {len(new_titles)}개")
         
         if new_titles:
+            # 새로운 기사들을 페이지 순서대로 정렬 (위에 있는 기사가 먼저)
+            new_articles = [article for article in current_articles if article['title'] in new_titles]
+            
             # 텔레그램 메시지 생성
             message = f"""🆕 새로운 스포츠 뉴스!
 
@@ -176,10 +180,9 @@ class NewsMonitor:
 📰 새로 올라온 기사:
 """
             
-            for title in new_titles:
-                link = current_articles[title]
+            for article in new_articles:
                 # HTML 형식으로 링크 포함
-                message += f"• <a href='{link}'>{title}</a>\n"
+                message += f"• <a href='{article['link']}'>{article['title']}</a>\n"
             
             # 메시지가 너무 길면 나누어 전송
             if len(message) > 4000:
@@ -188,13 +191,12 @@ class NewsMonitor:
 📍 연합뉴스 스포츠
 ⏰ {current_time.strftime('%Y-%m-%d %H:%M:%S KST')}
 
-📰 새로 올라온 기사 ({len(new_titles)}개):
+📰 새로 올라온 기사 ({len(new_articles)}개):
 """
                 
                 current_msg = base_msg
-                for title in new_titles:
-                    link = current_articles[title]
-                    line = f"• <a href='{link}'>{title}</a>\n"
+                for article in new_articles:
+                    line = f"• <a href='{article['link']}'>{article['title']}</a>\n"
                     if len(current_msg + line) > 3500:
                         self.send_telegram_message(current_msg)
                         current_msg = f"📰 계속...\n{line}"
@@ -209,15 +211,15 @@ class NewsMonitor:
             # 현재 기사들을 저장 (다음 비교를 위해)
             self.save_data(current_articles)
             self.previous_articles = current_articles
+            self.previous_titles = current_titles
             
             # 로그 파일 저장
             try:
                 log_filename = f"new_articles_{current_time.strftime('%Y%m%d_%H%M%S')}.txt"
                 with open(log_filename, 'w', encoding='utf-8') as f:
                     f.write(f"새로운 기사 발견: {current_time.strftime('%Y-%m-%d %H:%M:%S KST')}\n\n")
-                    for title in new_titles:
-                        link = current_articles[title]
-                        f.write(f"• {title}\n  링크: {link}\n\n")
+                    for article in new_articles:
+                        f.write(f"• {article['title']}\n  링크: {article['link']}\n\n")
                 print(f"📄 로그 파일 저장: {log_filename}")
             except Exception as e:
                 print(f"로그 파일 저장 실패: {e}")
@@ -227,6 +229,7 @@ class NewsMonitor:
             # 기사가 새로운 게 없어도 현재 상태 저장
             self.save_data(current_articles)
             self.previous_articles = current_articles
+            self.previous_titles = current_titles
         
         print(f"✅ 모니터링 완료")
 
