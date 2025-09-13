@@ -1,4 +1,4 @@
-name: 연합뉴스 스포츠 모니터링
+name: 스포츠 뉴스 통합 모니터링
 
 on:
   schedule:
@@ -22,7 +22,8 @@ on:
   workflow_dispatch:
 
 jobs:
-  monitor:
+  # 기존 연합뉴스 모니터링
+  yonhap-monitor:
     runs-on: ubuntu-latest
     
     steps:
@@ -38,7 +39,7 @@ jobs:
       run: |
         pip install requests beautifulsoup4
     
-    - name: 뉴스 모니터링 실행
+    - name: 연합뉴스 스포츠 모니터링 실행
       env:
         TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
         TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
@@ -46,11 +47,45 @@ jobs:
         GIST_ID: ${{ secrets.GIST_ID }}
       run: |
         python monitor_single.py
-
-    - name: 실행 결과 저장 (선택사항)
+    
+    - name: 연합뉴스 실행 결과 저장
       uses: actions/upload-artifact@v4
       if: always()
       with:
-        name: monitoring-logs
-        path: "*.txt"
+        name: yonhap-monitoring-logs
+        path: "new_articles_*.txt"
+        retention-days: 7
+
+  # 새로운 네이버 스포츠 모니터링
+  naver-sports-monitor:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: 코드 체크아웃
+      uses: actions/checkout@v4
+    
+    - name: Python 설정
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+    
+    - name: 의존성 설치
+      run: |
+        pip install requests beautifulsoup4
+    
+    - name: 네이버 스포츠 단독 뉴스 모니터링 실행
+      env:
+        TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+        TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        GIST_ACCESS_TOKEN: ${{ secrets.GIST_ACCESS_TOKEN_NAVER }}
+        GIST_ID: ${{ secrets.GIST_ID_NAVER }}
+      run: |
+        python naver_sports_monitor.py
+    
+    - name: 네이버 스포츠 실행 결과 저장
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: naver-sports-monitoring-logs
+        path: "sports_exclusive_*.txt"
         retention-days: 7
