@@ -2,8 +2,13 @@ import requests
 import json
 import os
 from datetime import datetime, timezone, timedelta
-from bs4 import BeautifulSoup
 import time
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import TimeoutException, NoSuchElementException
 
 # 한국 시간대 설정
 KST = timezone(timedelta(hours=9))
@@ -30,7 +35,43 @@ class NaverSportsMonitor:
             'general': '일반스포츠'
         }
         
+        # Selenium WebDriver 설정
+        self.driver = None
+        self.setup_driver()
+        
         self.load_previous_data()
+    
+    def setup_driver(self):
+        """Chrome WebDriver를 설정합니다"""
+        try:
+            chrome_options = Options()
+            chrome_options.add_argument('--headless')  # 브라우저 창 없이 실행
+            chrome_options.add_argument('--no-sandbox')
+            chrome_options.add_argument('--disable-dev-shm-usage')
+            chrome_options.add_argument('--disable-gpu')
+            chrome_options.add_argument('--window-size=1920,1080')
+            chrome_options.add_argument('--user-agent=Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1')
+            
+            # GitHub Actions 환경에서의 추가 설정
+            chrome_options.add_argument('--disable-extensions')
+            chrome_options.add_argument('--disable-plugins')
+            chrome_options.add_argument('--disable-images')
+            chrome_options.add_argument('--disable-javascript')  # JS 비활성화로 속도 향상
+            chrome_options.add_argument('--remote-debugging-port=9222')
+            
+            self.driver = webdriver.Chrome(options=chrome_options)
+            self.driver.set_page_load_timeout(30)
+            print("✅ Chrome WebDriver 설정 완료")
+            
+        except Exception as e:
+            print(f"❌ WebDriver 설정 실패: {e}")
+            self.driver = None
+    
+    def close_driver(self):
+        """WebDriver를 종료합니다"""
+        if self.driver:
+            self.driver.quit()
+            print("✅ WebDriver 종료")
     
     def load_previous_data(self):
         """GitHub Gist에서 이전 데이터를 로드합니다"""
@@ -45,27 +86,33 @@ class NaverSportsMonitor:
             
             if response.status_code == 200:
                 gist_data = response.json()
-                content = gist_data['files']['sports_exclusive_data.json']['content']
-                data = json.loads(content)
                 
-                # 섹션별로 이전 데이터 로드
-                self.previous_data = {}
-                for section in self.sports_sections.keys():
-                    if section in data:
-                        if 'articles' in data[section]:
-                            self.previous_data[section] = {item['title'] for item in data[section]['articles']}
-                        elif 'titles' in data[section]:
-                            self.previous_data[section] = set(data[section]['titles'])
+                # 파일이 존재하는지 확인
+                if 'naver_sports_exclusive_data.json' in gist_data['files']:
+                    content = gist_data['files']['naver_sports_exclusive_data.json']['content']
+                    data = json.loads(content)
+                    
+                    # 섹션별로 이전 데이터 로드
+                    self.previous_data = {}
+                    for section in self.sports_sections.keys():
+                        if section in data:
+                            if 'articles' in data[section]:
+                                self.previous_data[section] = {item['title'] for item in data[section]['articles']}
+                            elif 'titles' in data[section]:
+                                self.previous_data[section] = set(data[section]['titles'])
+                            else:
+                                self.previous_data[section] = set()
                         else:
                             self.previous_data[section] = set()
-                    else:
-                        self.previous_data[section] = set()
-                
-                total_articles = sum(len(titles) for titles in self.previous_data.values())
-                print(f"이전 데이터 로드: 총 {total_articles}개 기사")
+                    
+                    total_articles = sum(len(titles) for titles in self.previous_data.values())
+                    print(f"이전 데이터 로드: 총 {total_articles}개 기사")
+                else:
+                    print("네이버 스포츠 데이터 파일이 없습니다. 새로 시작합니다.")
+                    self.previous_data = {section: set() for section in self.sports_sections.keys()}
             else:
+                print(f"Gist 접근 실패: {response.status_code}")
                 self.previous_data = {section: set() for section in self.sports_sections.keys()}
-                print("이전 데이터가 없습니다. 새로 시작합니다.")
         except Exception as e:
             print(f"데이터 로드 실패: {e}")
             self.previous_data = {section: set() for section in self.sports_sections.keys()}
@@ -84,12 +131,15 @@ class NaverSportsMonitor:
             
             save_data['last_updated'] = get_kst_time().isoformat()
             
+            # 기존 Gist 업데이트 또는 새 파일 생성
             url = f"https://api.github.com/gists/{self.gist_id}"
             headers = {
                 "Authorization": f"Bearer {self.github_token}",
                 "Accept": "application/vnd.github.v3+json",
                 "Content-Type": "application/json"
             }
+            
+            # 기존 Gist 파일들을 유지하면서 새 파일 추가
             payload = {
                 "files": {
                     "naver_sports_exclusive_data.json": {
@@ -102,63 +152,93 @@ class NaverSportsMonitor:
             if response.status_code == 200:
                 print("데이터 저장 완료")
             else:
-                print(f"데이터 저장 실패: {response.status_code}")
+                print(f"데이터 저장 실패: {response.status_code} - {response.text}")
         except Exception as e:
             print(f"데이터 저장 실패: {e}")
     
     def get_exclusive_articles_from_section(self, section_id, section_name):
-        """특정 스포츠 섹션에서 '단독' 기사를 가져옵니다"""
+        """Selenium을 사용하여 특정 스포츠 섹션에서 '단독' 기사를 가져옵니다"""
+        if not self.driver:
+            print(f"❌ {section_name}: WebDriver가 초기화되지 않았습니다")
+            return {}
+            
         try:
             current_time = get_kst_time()
             date_str = current_time.strftime('%Y%m%d')
             url = f"https://m.sports.naver.com/{section_id}/news?sectionId={section_id}&sort=latest&date={date_str}&isPhoto=N"
             
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1'
-            }
+            print(f"📱 {section_name} 페이지 로딩 중...")
+            self.driver.get(url)
             
-            print(f"📱 {section_name} 페이지 접속 중...")
-            response = requests.get(url, headers=headers, timeout=15)
-            response.raise_for_status()
+            # JavaScript 로딩 대기
+            wait = WebDriverWait(self.driver, 15)
             
-            soup = BeautifulSoup(response.text, 'html.parser')
+            # 다양한 선택자로 뉴스 아이템 찾기
+            possible_selectors = [
+                "a[href*='/news/']",  # 뉴스 링크
+                "[class*='news']",    # news가 포함된 클래스
+                "[class*='item']",    # item이 포함된 클래스
+                "[class*='title']",   # title이 포함된 클래스
+                "article",            # article 태그
+                ".list li",           # 리스트 아이템
+                "[data-*]"            # data 속성이 있는 요소
+            ]
             
-            # .NewsItem_title__BXkJ6 클래스를 가진 요소들 찾기
-            title_elements = soup.select('.NewsItem_title__BXkJ6')
+            news_elements = []
+            for selector in possible_selectors:
+                try:
+                    elements = wait.until(EC.presence_of_all_elements_located((By.CSS_SELECTOR, selector)))
+                    if elements and len(elements) > 5:  # 충분한 요소가 있으면 사용
+                        news_elements = elements
+                        print(f"✅ {section_name}: '{selector}' 선택자로 {len(elements)}개 요소 발견")
+                        break
+                except TimeoutException:
+                    continue
             
-            if not title_elements:
-                print(f"⚠️ {section_name}: 뉴스 아이템을 찾을 수 없습니다")
+            if not news_elements:
+                # 페이지 소스 확인을 위한 디버깅
+                print(f"⚠️ {section_name}: 뉴스 요소를 찾을 수 없습니다")
+                page_source_sample = self.driver.page_source[:1000]
+                print(f"페이지 소스 샘플: {page_source_sample}")
                 return {}
             
             exclusive_articles = {}
             
-            for title_element in title_elements:
-                # 제목 텍스트 추출
-                title_text = title_element.get_text(strip=True)
-                
-                # '단독'이 포함된 기사만 선택
-                if '단독' in title_text:
-                    # 링크 찾기 - 부모나 형제 요소에서 링크 찾기
-                    link_element = title_element.find('a')
-                    if not link_element:
-                        # 부모 요소에서 링크 찾기
-                        parent = title_element.parent
-                        while parent and not link_element:
-                            link_element = parent.find('a')
-                            parent = parent.parent
+            for element in news_elements:
+                try:
+                    # 텍스트 추출
+                    text_content = element.text.strip()
                     
-                    if link_element:
-                        link = link_element.get('href')
-                        if link:
+                    # href 속성이 있는 경우 링크로 간주
+                    link = element.get_attribute('href')
+                    
+                    # 링크가 없으면 자식 요소에서 찾기
+                    if not link:
+                        try:
+                            link_element = element.find_element(By.TAG_NAME, 'a')
+                            link = link_element.get_attribute('href')
+                            if not text_content:
+                                text_content = link_element.text.strip()
+                        except NoSuchElementException:
+                            continue
+                    
+                    # '단독'이 포함된 텍스트만 선택
+                    if text_content and '단독' in text_content and link:
+                        # 네이버 뉴스 링크인지 확인
+                        if 'sports.naver.com' in link or 'news.naver.com' in link:
                             # 상대 링크를 절대 링크로 변환
                             if link.startswith('/'):
                                 link = 'https://m.sports.naver.com' + link
-                            elif not link.startswith('http'):
-                                link = 'https://m.sports.naver.com/' + link
                             
-                            if title_text and len(title_text) > 5:  # 너무 짧은 제목은 제외
-                                exclusive_articles[title_text] = link
-                                print(f"🔥 {section_name} 단독 기사: {title_text}")
+                            if len(text_content) > 5:  # 너무 짧은 제목은 제외
+                                # 제목 정리 (불필요한 텍스트 제거)
+                                clean_title = text_content.split('\n')[0].strip()
+                                exclusive_articles[clean_title] = link
+                                print(f"🔥 {section_name} 단독 기사: {clean_title}")
+                
+                except Exception as e:
+                    # 개별 요소 처리 실패는 무시하고 계속
+                    continue
             
             if exclusive_articles:
                 print(f"📰 {section_name}: {len(exclusive_articles)}개의 단독 기사 발견")
@@ -166,9 +246,9 @@ class NaverSportsMonitor:
                 print(f"📰 {section_name}: 단독 기사 없음")
             
             return exclusive_articles
-        
+            
         except Exception as e:
-            print(f"❌ {section_name} 페이지 접근 실패: {e}")
+            print(f"❌ {section_name} 페이지 크롤링 실패: {e}")
             return {}
     
     def send_telegram_message(self, message):
@@ -238,8 +318,8 @@ class NaverSportsMonitor:
                 else:
                     print(f"📰 {section_name}: 새로운 단독 기사 없음")
             
-            # 요청 간 간격 (너무 빠른 연속 요청 방지)
-            time.sleep(1)
+            # 각 섹션 크롤링 간 대기 시간
+            time.sleep(3)
         
         # 새로운 기사가 있으면 텔레그램 알림 발송
         if all_new_articles:
@@ -248,7 +328,7 @@ class NaverSportsMonitor:
             # 텔레그램 메시지 생성
             message = f"""🚨 새로운 스포츠 단독 뉴스!
 
-📱 네이버 스포츠 통합 모니터링
+📱 네이버 스포츠 Selenium 모니터링
 ⏰ {current_time.strftime('%Y-%m-%d %H:%M:%S KST')}
 🔥 총 {total_new_articles}개의 새 단독 기사
 
@@ -269,7 +349,7 @@ class NaverSportsMonitor:
                 # 헤더 메시지
                 header_msg = f"""🚨 새로운 스포츠 단독 뉴스!
 
-📱 네이버 스포츠 통합 모니터링
+📱 네이버 스포츠 Selenium 모니터링
 ⏰ {current_time.strftime('%Y-%m-%d %H:%M:%S KST')}
 🔥 총 {total_new_articles}개의 새 단독 기사
 
@@ -341,8 +421,16 @@ def main():
     print(f"현재 시간: {current_time.strftime('%Y-%m-%d %H:%M:%S KST')}")
     
     # 모니터 실행
-    monitor = NaverSportsMonitor(bot_token, chat_id, github_token, gist_id)
-    monitor.check_all_exclusive_news()
+    monitor = None
+    try:
+        monitor = NaverSportsMonitor(bot_token, chat_id, github_token, gist_id)
+        monitor.check_all_exclusive_news()
+    except Exception as e:
+        print(f"❌ 모니터링 실행 중 오류: {e}")
+    finally:
+        # WebDriver 정리
+        if monitor:
+            monitor.close_driver()
 
 if __name__ == "__main__":
     main()
