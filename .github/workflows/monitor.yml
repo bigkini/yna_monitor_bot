@@ -35,9 +35,14 @@ jobs:
       with:
         python-version: '3.11'
     
+    - name: Chrome 설치
+      uses: browser-actions/setup-chrome@latest
+      with:
+        chrome-version: stable
+    
     - name: 의존성 설치
       run: |
-        pip install requests beautifulsoup4
+        pip install requests beautifulsoup4 selenium
     
     - name: 연합뉴스 스포츠 모니터링 실행
       env:
