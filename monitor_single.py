@@ -161,6 +161,11 @@ class NewsMonitor:
             print("❌ 기사를 가져올 수 없습니다")
             return
         
+        # 디버깅: 현재 기사 데이터 타입 확인
+        print(f"현재 기사 데이터 타입: {type(current_articles)}")
+        if current_articles:
+            print(f"첫 번째 기사 타입: {type(current_articles[0])}")
+        
         # 새로운 기사들 찾기 (제목 기준으로 비교)
         current_titles = {article['title'] for article in current_articles}
         new_titles = current_titles - self.previous_titles
@@ -254,3 +259,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
