@@ -8,6 +8,7 @@ from bs4 import BeautifulSoup
 KST = timezone(timedelta(hours=9))
 
 def get_kst_time():
+    """현재 한국 시간을 반환합니다"""
     return datetime.now(KST)
 
 class NewsMonitor:
@@ -16,7 +17,6 @@ class NewsMonitor:
         self.chat_id = telegram_chat_id
         self.github_token = github_token
         self.gist_id = gist_id
-        self.previous_titles = set()
         self.load_previous_data()
     
     def load_previous_data(self):
@@ -28,28 +28,35 @@ class NewsMonitor:
                 "Accept": "application/vnd.github.v3+json",
                 "User-Agent": "News-Monitor-Bot"
             }
-            response = requests.get(url, headers=headers, timeout=10)
+            response = requests.get(url, headers=headers)
             
             if response.status_code == 200:
                 gist_data = response.json()
-                if 'news_data.json' in gist_data['files']:
-                    content = gist_data['files']['news_data.json']['content']
-                    data = json.loads(content)
-                    
-                    if 'articles' in data:
-                        self.previous_titles = {item['title'] for item in data['articles']}
-                    elif 'titles' in data:
-                        self.previous_titles = set(data['titles'])
-                    
-                    print(f"✅ 이전 데이터 로드: {len(self.previous_titles)}개 기사")
+                content = gist_data['files']['news_data.json']['content']
+                data = json.loads(content)
+                
+                # 기존 구조와 새 구조 모두 지원
+                if 'articles' in data:
+                    # 새로운 구조: articles 배열
+                    self.previous_titles = {item['title'] for item in data['articles']}
+                elif 'titles' in data:
+                    # 기존 구조: titles 배열 (문자열만)
+                    self.previous_titles = set(data['titles'])
+                else:
+                    self.previous_titles = set()
+                
+                print(f"이전 데이터 로드: {len(self.previous_titles)}개 기사")
             else:
-                print(f"⚠️ Gist 로드 실패 (상태 코드: {response.status_code}). 새로 시작합니다.")
+                self.previous_titles = set()
+                print("이전 데이터가 없습니다. 새로 시작합니다.")
         except Exception as e:
-            print(f"❌ 데이터 로드 중 오류 발생: {e}")
-
+            print(f"데이터 로드 실패: {e}")
+            self.previous_titles = set()
+    
     def save_data(self, current_articles):
-        """GitHub Gist에 현재 데이터를 업데이트합니다"""
+        """GitHub Gist에 현재 데이터를 저장합니다"""
         try:
+            # 딕셔너리를 리스트로 변환
             articles_list = [{'title': title, 'link': link} for title, link in current_articles.items()]
             data = {
                 'articles': articles_list,
@@ -70,102 +77,188 @@ class NewsMonitor:
                 }
             }
             
-            response = requests.patch(url, headers=headers, json=payload, timeout=10)
+            response = requests.patch(url, headers=headers, json=payload)
             if response.status_code == 200:
-                print("💾 Gist 데이터 저장 완료")
+                print("데이터 저장 완료")
             else:
-                print(f"❌ Gist 저장 실패: {response.status_code}")
+                print(f"데이터 저장 실패: {response.status_code}")
         except Exception as e:
-            print(f"❌ 데이터 저장 중 오류: {e}")
-
-    def get_news_articles(self):
-        """연합뉴스 스포츠 섹션 크롤링"""
-        url = "https://www.yna.co.kr/sports/all"
+            print(f"데이터 저장 실패: {e}")
+    
+    def get_news_articles(self, url):
+        """연합뉴스에서 스포츠 기사 제목과 링크를 가져옵니다"""
         try:
             headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
             }
+            print(f"뉴스 페이지 접속 중: {url}")
             response = requests.get(url, headers=headers, timeout=15)
             response.raise_for_status()
             
             soup = BeautifulSoup(response.text, 'html.parser')
-            # 기사 목록을 담고 있는 리스트 선택 (연합뉴스의 최신 구조 반영)
-            # .list-type212 혹은 .box-latest01 내의 li 태그들
-            items = soup.select('div.list-type212 li') or soup.select('.section01 .list-type212 li')
+            
+            # 첫 번째 스포츠 기사 목록만 선택 (div.list-type212 > ul.list01)
+            sports_section = soup.select_one('section.box-latest01 div.list-type212 ul.list01')
+            
+            if not sports_section:
+                print("스포츠 기사 섹션을 찾을 수 없습니다")
+                return {}
             
             articles = {}
-            for li in items:
-                title_tag = li.select_one('.tit') or li.select_one('strong.tit-news')
-                link_tag = li.select_one('a')
+            # li 요소들에서 제목과 링크 추출
+            for li in sports_section.find_all('li', recursive=False):
+                # 광고나 다른 요소는 제외 (data-cid가 있는 것만)
+                if not li.get('data-cid'):
+                    continue
                 
-                if title_tag and link_tag:
-                    title = title_tag.get_text(strip=True)
-                    link = link_tag.get('href')
-                    if link.startswith('//'):
-                        link = 'https:' + link
-                    elif link.startswith('/'):
+                # 제목 추출
+                title_element = li.select_one('span.title01')
+                if not title_element:
+                    continue
+                
+                title = title_element.get_text(strip=True)
+                
+                # 링크 추출
+                link_element = li.select_one('a.tit-news')
+                if not link_element:
+                    continue
+                
+                link = link_element.get('href')
+                if link:
+                    # 상대 링크를 절대 링크로 변환
+                    if link.startswith('/'):
                         link = 'https://www.yna.co.kr' + link
                     
-                    if title and len(title) > 5:
+                    if title and len(title) > 10:  # 너무 짧은 제목은 제외
                         articles[title] = link
             
+            print(f"📰 총 {len(articles)}개의 스포츠 기사를 찾았습니다")
             return articles
+        
         except Exception as e:
-            print(f"❌ 크롤링 중 오류: {e}")
+            print(f"뉴스 페이지 접근 실패: {e}")
             return {}
-
+    
     def send_telegram_message(self, message):
+        """텔레그램 메시지를 전송합니다"""
         try:
             url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
             data = {
                 "chat_id": self.chat_id,
                 "text": message,
                 "parse_mode": "HTML",
-                "disable_web_page_preview": False
+                "disable_web_page_preview": False  # 링크 미리보기 활성화
             }
-            requests.post(url, data=data, timeout=10).raise_for_status()
-            print("📤 텔레그램 알림 전송 완료")
+            response = requests.post(url, data=data, timeout=10)
+            response.raise_for_status()
+            print("✅ 텔레그램 메시지 전송 완료")
+            return True
         except Exception as e:
-            print(f"❌ 텔레그램 전송 실패: {e}")
-
+            print(f"❌ 텔레그램 메시지 전송 실패: {e}")
+            return False
+    
     def check_news(self):
+        """뉴스를 확인하고 새로운 기사가 있으면 알림을 보냅니다"""
+        url = "https://www.yna.co.kr/sports/all"
         current_time = get_kst_time()
-        print(f"🔍 모니터링 시작: {current_time.strftime('%Y-%m-%d %H:%M:%S')}")
+        print(f"\n{'='*60}")
+        print(f"🔍 뉴스 모니터링 시작: {current_time.strftime('%Y-%m-%d %H:%M:%S KST')}")
+        print(f"{'='*60}")
         
-        current_articles = self.get_news_articles()
+        current_articles = self.get_news_articles(url)
         if not current_articles:
+            print("❌ 기사를 가져올 수 없습니다")
             return
-
+        
+        # 현재 기사 제목들 (set)
         current_titles = set(current_articles.keys())
+        
+        # 새로운 기사들 찾기 (제목 기준으로 비교)
         new_titles = current_titles - self.previous_titles
         
+        print(f"새로운 기사: {len(new_titles)}개")
+        
         if new_titles:
-            # 뉴스 순서 유지를 위해 리스트로 변환 (역순으로 보내려면 reversed 사용)
-            new_list = [(t, current_articles[t]) for t in current_articles if t in new_titles]
+            # 새로운 기사들을 페이지 순서대로 정렬 (위에 있는 기사가 먼저)
+            new_articles = [(title, current_articles[title]) for title in current_articles.keys() if title in new_titles]
             
-            message = f"🆕 <b>새로운 스포츠 뉴스</b>\n\n"
-            for title, link in new_list:
+            # 텔레그램 메시지 생성
+            message = f"""🆕 새로운 스포츠 뉴스!
+
+📍 연합뉴스 스포츠
+⏰ {current_time.strftime('%Y-%m-%d %H:%M:%S KST')}
+
+📰 새로 올라온 기사:
+"""
+            
+            for title, link in new_articles:
+                # HTML 형식으로 링크 포함
                 message += f"• <a href='{link}'>{title}</a>\n"
             
-            self.send_telegram_message(message)
+            # 메시지가 너무 길면 나누어 전송
+            if len(message) > 4000:
+                base_msg = f"""🆕 새로운 스포츠 뉴스!
+
+📍 연합뉴스 스포츠
+⏰ {current_time.strftime('%Y-%m-%d %H:%M:%S KST')}
+
+📰 새로 올라온 기사 ({len(new_articles)}개):
+"""
+                
+                current_msg = base_msg
+                for title, link in new_articles:
+                    line = f"• <a href='{link}'>{title}</a>\n"
+                    if len(current_msg + line) > 3500:
+                        self.send_telegram_message(current_msg)
+                        current_msg = f"📰 계속...\n{line}"
+                    else:
+                        current_msg += line
+                
+                if current_msg:
+                    self.send_telegram_message(current_msg)
+            else:
+                self.send_telegram_message(message)
+            
+            # 현재 기사들을 저장 (다음 비교를 위해)
             self.save_data(current_articles)
+            self.previous_titles = current_titles
+            
+            # 로그 파일 저장
+            try:
+                log_filename = f"new_articles_{current_time.strftime('%Y%m%d_%H%M%S')}.txt"
+                with open(log_filename, 'w', encoding='utf-8') as f:
+                    f.write(f"새로운 기사 발견: {current_time.strftime('%Y-%m-%d %H:%M:%S KST')}\n\n")
+                    for title, link in new_articles:
+                        f.write(f"• {title}\n  링크: {link}\n\n")
+                print(f"📄 로그 파일 저장: {log_filename}")
+            except Exception as e:
+                print(f"로그 파일 저장 실패: {e}")
+        
         else:
-            print("😴 새로운 기사가 없습니다.")
+            print("새로운 기사가 없습니다")
+            # 기사가 새로운 게 없어도 현재 상태 저장
+            self.save_data(current_articles)
+            self.previous_titles = current_titles
+        
+        print(f"✅ 모니터링 완료")
 
 def main():
-    # GitHub Secrets에 등록해야 할 변수들
-    config = {
-        'bot_token': os.getenv('TELEGRAM_BOT_TOKEN'),
-        'chat_id': os.getenv('TELEGRAM_CHAT_ID'),
-        'github_token': os.getenv('GIST_ACCESS_TOKEN'),
-        'gist_id': os.getenv('GIST_ID')
-    }
+    # 환경변수에서 설정 가져오기
+    bot_token = os.getenv('TELEGRAM_BOT_TOKEN')
+    chat_id = os.getenv('TELEGRAM_CHAT_ID')
+    github_token = os.getenv('GIST_ACCESS_TOKEN')
+    gist_id = os.getenv('GIST_ID')
     
-    if not all(config.values()):
-        print("❌ 설정 오류: 모든 환경 변수가 설정되었는지 확인하세요.")
+    if not all([bot_token, chat_id, github_token, gist_id]):
+        print("❌ 환경변수가 설정되지 않았습니다!")
         return
-
-    monitor = NewsMonitor(**config)
+    
+    current_time = get_kst_time()
+    print("🚀 연합뉴스 스포츠 모니터링 시작")
+    print(f"현재 시간: {current_time.strftime('%Y-%m-%d %H:%M:%S KST')}")
+    
+    # 모니터 실행
+    monitor = NewsMonitor(bot_token, chat_id, github_token, gist_id)
     monitor.check_news()
 
 if __name__ == "__main__":
