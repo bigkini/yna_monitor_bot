@@ -17,7 +17,7 @@ class NewsMonitor:
         self.chat_id = telegram_chat_id
         self.github_token = github_token
         self.gist_id = gist_id
-        # {제목: {'link': ..., 'date': ...}} 구조로 관리하여 중복 체크와 날짜 필터링 동시 수행
+        # {제목: {'link': ..., 'date': ...}} 구조로 관리
         self.previous_articles = {} 
         self.load_previous_data()
     
@@ -54,8 +54,7 @@ class NewsMonitor:
                                     'link': item['link'],
                                     'date': item_date_str
                                 }
-                    
-                    print(f"✅ 이전 데이터 로드: {len(self.previous_articles)}개 (최근 24시간 기준)")
+                    print(f"✅ 유효 데이터 로드: {len(self.previous_articles)}개 (최근 24시간)")
             else:
                 print("이전 데이터가 없거나 로드에 실패했습니다. 새로 시작합니다.")
         except Exception as e:
@@ -67,7 +66,7 @@ class NewsMonitor:
             limit_date = get_kst_time() - timedelta(hours=24)
             current_time_str = get_kst_time().isoformat()
             
-            # 1. 새로 수집된 기사를 previous_articles에 병합 (수집 시간 기록)
+            # 1. 새로 수집된 기사를 previous_articles에 병합
             for title, link in current_articles_dict.items():
                 if title not in self.previous_articles:
                     self.previous_articles[title] = {
@@ -131,7 +130,6 @@ class NewsMonitor:
             sports_section = soup.select_one('section.box-latest01 div.list-type212 ul.list01')
             
             if not sports_section:
-                print("스포츠 기사 섹션을 찾을 수 없습니다")
                 return {}
             
             articles = {}
@@ -149,7 +147,6 @@ class NewsMonitor:
                     
                     if title and len(title) > 10:
                         articles[title] = link
-            
             return articles
         except Exception as e:
             print(f"뉴스 페이지 접근 실패: {e}")
@@ -165,8 +162,7 @@ class NewsMonitor:
                 "parse_mode": "HTML",
                 "disable_web_page_preview": False
             }
-            response = requests.post(url, data=data, timeout=10)
-            response.raise_for_status()
+            requests.post(url, data=data, timeout=10).raise_for_status()
             print("✅ 텔레그램 메시지 전송 완료")
             return True
         except Exception as e:
@@ -174,59 +170,50 @@ class NewsMonitor:
             return False
 
     def check_news(self):
-        """뉴스를 확인하고 새로운 기사가 있으면 알림을 보냅니다"""
+        """뉴스를 확인하고 상단에 네이버 퀵링크를 포함하여 알림을 보냅니다"""
         url = "https://www.yna.co.kr/sports/all"
         current_time = get_kst_time()
-        print(f"\n{'='*60}")
-        print(f"🔍 뉴스 모니터링 시작: {current_time.strftime('%Y-%m-%d %H:%M:%S KST')}")
+        today_str = current_time.strftime('%Y%m%d')
+        
+        print(f"\n🔍 모니터링 시작: {current_time.strftime('%Y-%m-%d %H:%M:%S KST')}")
         
         current_articles = self.get_news_articles(url)
-        if not current_articles:
-            print("❌ 기사를 가져올 수 없습니다")
-            return
+        if not current_articles: return
         
-        # 중복 체크: 제목 기준으로 비교
         new_titles = set(current_articles.keys()) - set(self.previous_articles.keys())
-        print(f"새로운 기사: {len(new_titles)}개")
         
         if new_titles:
-            new_articles_to_send = [(title, current_articles[title]) for title in current_articles.keys() if title in new_titles]
+            # 1. 메시지 상단: 네이버 스포츠 섹션별 퀵링크
+            message = f"📌 <b>네이버 스포츠 주요 섹션 (오늘)</b>\n"
+            message += f"⚾ <a href='https://m.sports.naver.com/kbaseball/news?sectionId=kbaseball&sort=popular&date={today_str}&isPhoto=N'>KBO 야구 인기뉴스</a>\n"
+            message += f"🏐 <a href='https://m.sports.naver.com/volleyball/news?sectionId=volleyball&sort=popular&date={today_str}&isPhoto=N'>배구 인기뉴스</a>\n"
+            message += f"🏟️ <a href='https://m.sports.naver.com/general/news?sectionId=general&sort=popular&date={today_str}&isPhoto=N'>일반 스포츠 인기뉴스</a>\n\n"
+            message += f"<b>{'='*20}</b>\n\n"
+            message += f"🆕 <b>연합뉴스 신규 스포츠 기사</b>\n\n"
             
-            message = f"🆕 <b>새로운 스포츠 뉴스!</b>\n\n"
-            message += f"📍 연합뉴스 스포츠\n"
-            message += f"⏰ {current_time.strftime('%Y-%m-%d %H:%M:%S KST')}\n\n"
-            message += f"📰 새로 올라온 기사:\n"
-            
-            for title, link in new_articles_to_send:
+            new_articles = [(t, current_articles[t]) for t in current_articles if t in new_titles]
+            for title, link in new_articles:
                 message += f"• <a href='{link}'>{title}</a>\n"
             
-            # 메시지 전송 (길이 제한 처리 포함)
-            if len(message) > 4000:
-                self.send_telegram_message("🆕 뉴스가 너무 많아 상위 기사만 먼저 보냅니다.")
-                # ... (필요 시 분할 전송 로직 유지)
-            else:
-                self.send_telegram_message(message)
-            
-            # 필터링 및 저장 로직 호출
+            self.send_telegram_message(message)
             self.save_data(current_articles)
         else:
-            print("새로운 기사가 없습니다")
-            # 기사가 없어도 24시간 경과 데이터를 청소하기 위해 저장 로직 호출
+            print("새로운 기사가 없습니다. (데이터 최적화 수행)")
             self.save_data(current_articles)
-        
-        print(f"✅ 모니터링 완료")
 
 def main():
-    bot_token = os.getenv('TELEGRAM_BOT_TOKEN')
-    chat_id = os.getenv('TELEGRAM_CHAT_ID')
-    github_token = os.getenv('GIST_ACCESS_TOKEN')
-    gist_id = os.getenv('GIST_ID')
+    config = {
+        'telegram_bot_token': os.getenv('TELEGRAM_BOT_TOKEN'),
+        'telegram_chat_id': os.getenv('TELEGRAM_CHAT_ID'),
+        'github_token': os.getenv('GIST_ACCESS_TOKEN'),
+        'gist_id': os.getenv('GIST_ID')
+    }
     
-    if not all([bot_token, chat_id, github_token, gist_id]):
+    if not all(config.values()):
         print("❌ 환경변수 설정 확인 필요!")
         return
     
-    monitor = NewsMonitor(bot_token, chat_id, github_token, gist_id)
+    monitor = NewsMonitor(**config)
     monitor.check_news()
 
 if __name__ == "__main__":
